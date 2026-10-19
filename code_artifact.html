@@ -1,0 +1,1641 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>學生活動配額抽籤系統 (男女配額版)</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- SheetJS for Excel / CSV Parsing & Export -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <!-- Canvas Confetti for Celebration Effects -->
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+  <!-- Phosphor Icons -->
+  <script src="https://unpkg.com/@phosphor-icons/web"></script>
+  <!-- Google Fonts Inter & Noto Sans TC -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { 
+      getAuth, 
+      signInWithCustomToken, 
+      signInAnonymously, 
+      onAuthStateChanged 
+    } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { 
+      getFirestore, 
+      collection, 
+      doc, 
+      setDoc, 
+      deleteDoc, 
+      onSnapshot 
+    } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'student-lottery-gender-app';
+    let db = null;
+    let auth = null;
+    let currentUser = null;
+
+    if (typeof __firebase_config !== 'undefined') {
+      try {
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+        auth = getAuth(app);
+
+        const initAuth = async () => {
+          try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+              await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+              await signInAnonymously(auth);
+            }
+          } catch (err) {
+            console.error('Firebase Auth Error:', err);
+            try { await signInAnonymously(auth); } catch(e){}
+          }
+        };
+
+        initAuth();
+
+        onAuthStateChanged(auth, (user) => {
+          currentUser = user;
+          if (user) {
+            subscribeToCloudBlacklist();
+          }
+        });
+      } catch (e) {
+        console.error('Firebase initialization failed:', e);
+      }
+    }
+
+    function subscribeToCloudBlacklist() {
+      if (!db || !currentUser) return;
+      const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'exclusions');
+      
+      onSnapshot(colRef, (snapshot) => {
+        const list = [];
+        snapshot.forEach(docSnap => {
+          list.push({ docId: docSnap.id, ...docSnap.data() });
+        });
+        if (typeof window.syncCloudBlacklist === 'function') {
+          window.syncCloudBlacklist(list);
+        }
+      }, (error) => {
+        console.error('Firestore snapshot error:', error);
+      });
+    }
+
+    window.cloudSaveExclusion = async function(student) {
+      if (!db || !currentUser) return null;
+      try {
+        const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'exclusions');
+        const rawKey = `${student.classNum || 'CLASS'}_${student.studentNo || student.id || 'NO'}_${student.name || 'NAME'}_${student.gender || 'GENDER'}_${student.grade || 'G'}`;
+        const docKey = rawKey.replace(/[\/\s#$[\]]/g, '_');
+        const docRef = doc(colRef, docKey);
+        await setDoc(docRef, {
+          id: student.id || '',
+          name: student.name || '',
+          gender: student.gender || '',
+          grade: student.grade || '',
+          classNum: student.classNum || '',
+          studentNo: student.studentNo || '',
+          docKey: docKey,
+          addedAt: new Date().toISOString()
+        });
+        return docKey;
+      } catch (e) {
+        console.error('Error saving to cloud:', e);
+        return null;
+      }
+    };
+
+    window.cloudDeleteExclusion = async function(docKey) {
+      if (!db || !currentUser || !docKey) return;
+      try {
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'exclusions', docKey);
+        await deleteDoc(docRef);
+      } catch (e) {
+        console.error('Error deleting from cloud:', e);
+      }
+    };
+
+    window.cloudBatchSaveExclusions = async function(students) {
+      if (!db || !currentUser || !students || students.length === 0) return;
+      const promises = students.map(st => window.cloudSaveExclusion(st));
+      try {
+        await Promise.all(promises);
+      } catch (err) {
+        console.error('Error in batch saving to cloud:', err);
+      }
+    };
+
+    window.cloudClearAllExclusions = async function() {
+      if (!db || !currentUser) return;
+      if (typeof window.getExcludedListInternal === 'function') {
+        const items = window.getExcludedListInternal();
+        const promises = items.filter(it => it.docId).map(it => window.cloudDeleteExclusion(it.docId));
+        await Promise.all(promises);
+      }
+    };
+  </script>
+
+  <style>
+    body {
+      background-color: #f8fafc;
+      font-family: 'Inter', 'Noto Sans TC', sans-serif;
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: #f1f5f9;
+      border-radius: 4px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 4px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+  </style>
+</head>
+<body class="min-h-screen text-slate-800 flex flex-col">
+
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-xs">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-sky-500 flex items-center justify-center text-white shadow-md">
+          <i class="ph-bold ph-users-three text-xl"></i>
+        </div>
+        <div>
+          <h1 class="font-bold text-lg text-slate-900 leading-tight">學生活動配額抽籤系統</h1>
+          <p class="text-xs text-slate-500">按年級男女配額獨立抽選 · 自動過濾已中籤資料庫（永久保留名單）</p>
+        </div>
+      </div>
+      
+      <!-- Right Status Summary -->
+      <div class="hidden sm:flex items-center space-x-2.5">
+        <span id="headerCandidateCount" class="text-xs font-semibold px-2.5 py-1 bg-slate-100 text-slate-600 rounded-full border border-slate-200">
+          已載入學生：0
+        </span>
+        <span id="headerExcludedCount" class="text-xs font-semibold px-2.5 py-1 bg-amber-50 text-amber-700 rounded-full border border-amber-200">
+          過濾資料庫：0
+        </span>
+        <span id="headerWinnersCount" class="text-xs font-semibold px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-full border border-emerald-200">
+          中籤名單：0
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-8">
+
+    <!-- Top Two Cards: Upload candidate list and blacklist -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      
+      <!-- Card 1: Upload Candidate Excel (班別, 學號, 姓名, 性別) -->
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center space-x-2.5">
+              <span class="w-7 h-7 rounded-lg bg-indigo-100 text-indigo-600 font-bold flex items-center justify-center text-sm">1</span>
+              <h2 class="text-base font-bold text-slate-900">上載待抽學生名單 (Excel/CSV)</h2>
+            </div>
+            <button type="button" onclick="downloadSampleCandidateFile()" class="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1">
+              <i class="ph-bold ph-download-simple"></i> 下載名單範本 (班別/學號/姓名/性別)
+            </button>
+          </div>
+
+          <p class="text-sm text-slate-500 mb-4">
+            必備欄位：<strong>班別</strong>（如 6A、5B）、<strong>學號</strong>、<strong>姓名</strong>、<strong>性別</strong>（男/女、M/F）。
+          </p>
+
+          <!-- Drag and Drop Box -->
+          <div id="candidateDropZone" class="border-2 border-dashed border-slate-300 hover:border-indigo-500 transition-colors rounded-xl p-6 text-center cursor-pointer bg-slate-50/50 hover:bg-indigo-50/20 relative group">
+            <input type="file" id="candidateFileInput" accept=".xlsx, .xls, .csv" class="hidden">
+            <i class="ph ph-file-xls text-4xl text-indigo-500 mb-2 pointer-events-none group-hover:scale-110 transition-transform"></i>
+            <p class="text-sm font-medium text-slate-700 pointer-events-none">點擊此處選擇檔案，或直接拖曳檔案至此</p>
+            <p id="candidateFileStatus" class="text-xs text-slate-400 mt-1 pointer-events-none">未選擇任何檔案</p>
+            <div class="mt-3">
+              <button type="button" onclick="event.stopPropagation(); triggerCandidateFileInput();" class="px-3.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold rounded-lg border border-indigo-200 transition">
+                <i class="ph-bold ph-folder-open mr-1"></i>瀏覽本機檔案
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Grade & Gender Summary Pills -->
+        <div class="mt-4 pt-4 border-t border-slate-100 flex flex-wrap items-center gap-2" id="candidateStatsBar">
+          <span class="text-xs text-slate-400">目前未讀取名單資料</span>
+        </div>
+      </div>
+
+      <!-- Card 2: Exclusion / Past Winner Database (班別, 學號, 姓名, 性別) -->
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center space-x-2.5">
+              <span class="w-7 h-7 rounded-lg bg-amber-100 text-amber-700 font-bold flex items-center justify-center text-sm">2</span>
+              <h2 class="text-base font-bold text-slate-900">排除資料庫（已中籤 / 禁抽名單）</h2>
+            </div>
+            <button type="button" onclick="downloadSampleBlacklistFile()" class="text-xs text-amber-700 hover:text-amber-900 font-medium flex items-center gap-1">
+              <i class="ph-bold ph-download-simple"></i> 下載禁抽範本 (含性別)
+            </button>
+          </div>
+
+          <p class="text-sm text-slate-500 mb-4">
+            支援欄位：<strong>班別</strong>、<strong>學號</strong>、<strong>姓名</strong>、<strong>性別</strong>。任何列於資料庫中的學生將自動排除，名單永久保留。
+          </p>
+
+          <!-- Exclusion Controls -->
+          <div class="flex items-center space-x-3 mb-3">
+            <input type="file" id="blacklistFileInput" accept=".xlsx, .xls, .csv" class="hidden">
+            <button type="button" onclick="triggerBlacklistFileInput()" class="flex-1 py-2 px-3 border border-amber-300 bg-amber-50/50 hover:bg-amber-100/60 rounded-xl text-xs font-bold text-amber-900 flex items-center justify-center gap-2 transition cursor-pointer shadow-xs">
+              <i class="ph-bold ph-upload-simple text-amber-700"></i> 上載禁抽 Excel (班別/學號/姓名/性別)
+            </button>
+
+            <button type="button" onclick="openManualBlacklistModal()" class="py-2 px-3 border border-slate-300 hover:bg-slate-50 rounded-xl text-xs font-semibold text-slate-700 flex items-center gap-1.5 transition cursor-pointer">
+              <i class="ph-bold ph-plus"></i> 手動輸入
+            </button>
+            <button type="button" onclick="promptClearBlacklist()" class="py-2 px-3 text-red-600 hover:bg-red-50 rounded-xl text-xs font-semibold transition cursor-pointer">
+              清空
+            </button>
+          </div>
+
+          <!-- Excluded items preview box -->
+          <div class="border border-slate-200 rounded-xl bg-slate-50 p-3 h-28 overflow-y-auto custom-scrollbar text-xs">
+            <div id="blacklistItemsList" class="flex flex-wrap gap-1.5">
+              <span class="text-slate-400 italic">目前資料庫無排除名單，所有學生皆具抽籤資格。</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-4 pt-4 border-t border-slate-100 text-xs text-slate-500 flex justify-between items-center">
+          <div class="flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span id="blacklistCounterText">已註冊 0 位不可中籤學生 (一直保留)</span>
+          </div>
+          <button type="button" onclick="loadSampleBlacklist()" class="text-indigo-600 hover:underline">載入示範排除數據</button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Card 3: Grade and Gender Quota Settings -->
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-100">
+        <div class="flex items-center space-x-2.5">
+          <span class="w-7 h-7 rounded-lg bg-emerald-100 text-emerald-700 font-bold flex items-center justify-center text-sm">3</span>
+          <div>
+            <h2 class="text-base font-bold text-slate-900">設定各年級【男生】及【女生】指定名額</h2>
+            <p class="text-xs text-slate-500">分別指定每個年級要抽出的男生及女生名額（例如 6年級 男10人/女10人；5年級 男10人/女10人；4年級 男5人/女5人）</p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-3">
+          <button type="button" onclick="addGradeQuotaRow()" class="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition">
+            <i class="ph-bold ph-plus"></i> 新增年級配額
+          </button>
+          <div class="text-right flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200">
+            <span class="text-xs text-slate-500">預計總名額：</span>
+            <span class="text-xs font-bold text-sky-600"><i class="ph-bold ph-gender-male mr-0.5"></i><span id="totalMaleQuotaDisplay">25</span>男</span>
+            <span class="text-xs text-slate-300">|</span>
+            <span class="text-xs font-bold text-rose-600"><i class="ph-bold ph-gender-female mr-0.5"></i><span id="totalFemaleQuotaDisplay">25</span>女</span>
+            <span class="text-xs text-slate-300">|</span>
+            <span class="text-sm font-black text-indigo-600">共 <span id="totalQuotaDisplay">50</span> 人</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quotas Row Container with Boys and Girls -->
+      <div id="quotaRowsContainer" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        <!-- Dynamically injected quotas -->
+      </div>
+    </div>
+
+    <!-- Card 4: Action Section -->
+    <div class="bg-gradient-to-br from-indigo-900 via-slate-900 to-indigo-950 rounded-2xl shadow-xl text-white p-6 sm:p-8 relative overflow-hidden">
+      <div class="absolute -right-10 -bottom-10 w-72 h-72 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
+
+      <div class="relative z-10 flex flex-col md:flex-row items-center justify-between gap-6">
+        <div>
+          <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-indigo-500/30 text-indigo-200 border border-indigo-400/30 mb-2">
+            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span> 性別精準抽籤核心
+          </span>
+          <h2 class="text-2xl font-black tracking-tight text-white">啟動按性別與年級配額抽籤</h2>
+          <p class="text-slate-300 text-xs sm:text-sm mt-1 max-w-xl">
+            系統會先過濾排除資料庫中的同學，並按各年級【男生】與【女生】設定的名額，使用高隨機度算法（Crypto API）獨立抽出。
+          </p>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3">
+          <button type="button" id="startDrawBtn" onclick="executeDraw()" class="px-6 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 active:scale-95 text-white font-bold rounded-xl shadow-lg shadow-emerald-500/25 flex items-center gap-2 text-sm transition-all duration-150 cursor-pointer">
+            <i class="ph-bold ph-play text-lg"></i>
+            開始抽籤
+          </button>
+          <button type="button" id="resetDrawBtn" onclick="resetDrawResults()" class="px-4 py-3.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-sm border border-slate-700 transition cursor-pointer">
+            重設本次結果
+          </button>
+        </div>
+      </div>
+
+      <!-- Live Lottery Slot Animation Board -->
+      <div id="lotteryAnimationCard" class="hidden mt-6 pt-6 border-t border-slate-800">
+        <div class="flex items-center justify-between mb-3">
+          <span id="drawingGradeLabel" class="text-xs font-semibold text-indigo-300 tracking-wider uppercase">抽籤進行中...</span>
+          <div class="flex items-center gap-2 text-xs text-slate-400">
+            <i class="ph-bold ph-spinner animate-spin text-indigo-400"></i> 計算名單中
+          </div>
+        </div>
+        <div class="bg-black/40 rounded-xl p-4 border border-slate-700/60 flex items-center justify-center min-h-[90px]">
+          <span id="rollingNamesText" class="text-xl sm:text-2xl font-black text-amber-300 tracking-wider">準備中...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card 5: Draw Results Section -->
+    <div id="resultsSection" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 hidden">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-100">
+        <div>
+          <h2 class="text-lg font-bold text-slate-900 flex items-center gap-2">
+            <i class="ph-bold ph-trophy text-amber-500 text-xl"></i>
+            中籤名單報告 (<span id="resultsCountBadge" class="text-indigo-600 font-bold">0</span> 人)
+          </h2>
+          <p class="text-xs text-slate-500 mt-0.5">名單已按年級與男女配額精準抽出，並全面過濾排除庫學生。</p>
+        </div>
+
+        <div class="flex items-center gap-2.5">
+          <button type="button" onclick="exportWinnersToExcel()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-sm transition cursor-pointer">
+            <i class="ph-bold ph-file-arrow-down text-base"></i> 導出中籤 Excel 報表
+          </button>
+          <button type="button" onclick="commitWinnersToBlacklist()" class="px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-bold border border-indigo-200 flex items-center gap-1.5 transition cursor-pointer">
+            <i class="ph-bold ph-database"></i> 將所有中籤者加入排除庫
+          </button>
+        </div>
+      </div>
+
+      <!-- Tab Buttons for Filter by Grade and Gender -->
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div class="flex flex-wrap items-center gap-2" id="resultsGradeTabs">
+          <!-- Grade Filter Tabs -->
+        </div>
+
+        <div class="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
+          <button type="button" onclick="filterResultsByGender('ALL')" id="filterGenderAllBtn" class="px-2.5 py-1 text-xs font-bold rounded-lg bg-white shadow-xs text-slate-800">全部性別</button>
+          <button type="button" onclick="filterResultsByGender('男')" id="filterGenderMaleBtn" class="px-2.5 py-1 text-xs font-bold rounded-lg text-slate-600 hover:text-sky-700"><i class="ph-bold ph-gender-male mr-1 text-sky-500"></i>男生</button>
+          <button type="button" onclick="filterResultsByGender('女')" id="filterGenderFemaleBtn" class="px-2.5 py-1 text-xs font-bold rounded-lg text-slate-600 hover:text-rose-700"><i class="ph-bold ph-gender-female mr-1 text-rose-500"></i>女生</button>
+        </div>
+      </div>
+
+      <!-- Winners Table with Gender Column -->
+      <div class="overflow-x-auto rounded-xl border border-slate-200">
+        <table class="w-full text-left text-xs sm:text-sm">
+          <thead class="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200 uppercase tracking-wider">
+            <tr>
+              <th class="py-3 px-4">#</th>
+              <th class="py-3 px-4">年級</th>
+              <th class="py-3 px-4">班別</th>
+              <th class="py-3 px-4">學號</th>
+              <th class="py-3 px-4">學生姓名</th>
+              <th class="py-3 px-4">性別</th>
+              <th class="py-3 px-4">抽籤時間</th>
+              <th class="py-3 px-4 text-right">狀態</th>
+            </tr>
+          </thead>
+          <tbody id="winnersTableBody" class="divide-y divide-slate-100 font-medium text-slate-700">
+            <!-- Dynamic Rows -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Toast Notification -->
+  <div id="toastNotification" class="fixed bottom-6 right-6 z-50 transform translate-y-20 opacity-0 transition-all duration-300 pointer-events-none">
+    <div class="bg-slate-900 text-white px-5 py-3 rounded-xl shadow-xl flex items-center gap-3 text-sm">
+      <i id="toastIcon" class="ph-bold ph-info text-indigo-400 text-base"></i>
+      <span id="toastMessage">通知訊息</span>
+    </div>
+  </div>
+
+  <!-- Clear Blacklist Confirmation Modal -->
+  <div id="confirmClearModal" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 hidden">
+    <div class="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 text-center">
+      <div class="w-12 h-12 bg-red-100 text-red-600 rounded-2xl flex items-center justify-center mx-auto mb-4 text-2xl">
+        <i class="ph-bold ph-trash"></i>
+      </div>
+      <h3 class="text-base font-bold text-slate-900 mb-2">確定要清空排除庫？</h3>
+      <p class="text-xs text-slate-500 mb-6">
+        排除庫名單一經清空，所有過往中籤學生將重新具備抽籤資格。此操作無法復原。
+      </p>
+      <div class="flex items-center justify-center gap-3">
+        <button type="button" onclick="closeClearConfirmModal()" class="flex-1 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl border border-slate-200 transition">
+          取消
+        </button>
+        <button type="button" onclick="confirmClearBlacklist()" class="flex-1 py-2 text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white rounded-xl shadow transition">
+          確認清空
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Manual Add Modal with Gender Support -->
+  <div id="manualModal" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 hidden">
+    <div class="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-base font-bold text-slate-900">手動輸入排除學生 (含性別)</h3>
+        <button type="button" onclick="closeManualBlacklistModal()" class="text-slate-400 hover:text-slate-600">
+          <i class="ph ph-x text-lg"></i>
+        </button>
+      </div>
+      <p class="text-xs text-slate-500 mb-4">輸入已中籤或不參與抽籤的學生資料：</p>
+      <div class="space-y-3">
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">學生姓名 *</label>
+          <input type="text" id="manualName" placeholder="例如：陳大文" class="w-full text-sm px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div class="grid grid-cols-3 gap-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">班別 (如 6A)</label>
+            <input type="text" id="manualClass" placeholder="例如：6A" class="w-full text-sm px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">學號 (如 01)</label>
+            <input type="text" id="manualId" placeholder="例如：01" class="w-full text-sm px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">性別</label>
+            <select id="manualGender" class="w-full text-sm px-3 py-2 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white">
+              <option value="男">男</option>
+              <option value="女">女</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="mt-6 flex justify-end gap-2.5">
+        <button type="button" onclick="closeManualBlacklistModal()" class="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition">取消</button>
+        <button type="button" onclick="submitManualBlacklist()" class="px-4 py-2 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow transition">確認新增</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let allCandidates = [];        
+    let excludedSet = new Set();    
+    let excludedList = [];         
+    let gradeQuotas = [            
+      { grade: '6', maleQuota: 10, femaleQuota: 10 },
+      { grade: '5', maleQuota: 10, femaleQuota: 10 },
+      { grade: '4', maleQuota: 5, femaleQuota: 5 }
+    ];
+    let winnersList = [];          
+    let currentFilterGrade = 'ALL';
+    let currentFilterGender = 'ALL';
+
+    window.getExcludedListInternal = () => excludedList;
+
+    // Toast Notification helper
+    function showToast(message, type = 'info') {
+      const toast = document.getElementById('toastNotification');
+      const toastMsg = document.getElementById('toastMessage');
+      const toastIcon = document.getElementById('toastIcon');
+
+      if (!toast || !toastMsg) return;
+
+      toastMsg.textContent = message;
+      if (type === 'error') {
+        toastIcon.className = 'ph-bold ph-warning-circle text-rose-400 text-base';
+      } else if (type === 'success') {
+        toastIcon.className = 'ph-bold ph-check-circle text-emerald-400 text-base';
+      } else {
+        toastIcon.className = 'ph-bold ph-info text-indigo-400 text-base';
+      }
+
+      toast.classList.remove('translate-y-20', 'opacity-0');
+      toast.classList.add('translate-y-0', 'opacity-100');
+
+      setTimeout(() => {
+        toast.classList.remove('translate-y-0', 'opacity-100');
+        toast.classList.add('translate-y-20', 'opacity-0');
+      }, 3500);
+    }
+
+    // Extract grade from class string (e.g. "6A" -> "6", "P5B" -> "5")
+    function extractGradeFromClassOrGrade(classVal, gradeVal) {
+      const combined = (String(gradeVal || '') + ' ' + String(classVal || '')).trim().toUpperCase();
+      if (!combined) return '未分級';
+
+      const matchPrefixed = combined.match(/[PG]([1-9])/i);
+      if (matchPrefixed) return matchPrefixed[1];
+
+      const matchDigit = combined.match(/\b([1-9])[A-Z0-9\-_\s]/i) || combined.match(/^([1-9])/);
+      if (matchDigit) return matchDigit[1];
+
+      if (combined.includes('六') || combined.includes('6')) return '6';
+      if (combined.includes('五') || combined.includes('5')) return '5';
+      if (combined.includes('四') || combined.includes('4')) return '4';
+      if (combined.includes('三') || combined.includes('3')) return '3';
+      if (combined.includes('二') || combined.includes('2')) return '2';
+      if (combined.includes('一') || combined.includes('1')) return '1';
+
+      return classVal ? String(classVal).trim() : '未分級';
+    }
+
+    // Clean strings and remove invisible unicode characters
+    function cleanStringVal(val) {
+      if (val === null || val === undefined) return '';
+      return String(val).trim().replace(/[\u200B-\u200D\uFEFF]/g, '');
+    }
+
+    // Normalize Gender: M/F, Male/Female, Boy/Girl -> "男" / "女"
+    function normalizeGender(genderStr) {
+      const g = cleanStringVal(genderStr).toUpperCase();
+      if (!g) return '男'; // Default fallback if unspecified
+
+      if (g.includes('女') || g === 'F' || g === 'FEMALE' || g === 'GIRL' || g === 'W') {
+        return '女';
+      }
+      if (g.includes('男') || g === 'M' || g === 'MALE' || g === 'BOY') {
+        return '男';
+      }
+      return '男';
+    }
+
+    // Normalize student number (e.g. "01" vs "1" -> "1")
+    function normalizeStudentNo(noStr) {
+      const clean = cleanStringVal(noStr);
+      if (!clean) return '';
+      const num = parseInt(clean, 10);
+      return isNaN(num) ? clean.toUpperCase() : String(num);
+    }
+
+    function generateStudentUniqueKey(student) {
+      const cls = cleanStringVal(student.classNum).toUpperCase();
+      const rawNo = cleanStringVal(student.studentNo || student.id).toUpperCase();
+      const normNo = normalizeStudentNo(rawNo);
+      const name = cleanStringVal(student.name).replace(/\s+/g, '').toUpperCase();
+      const grade = cleanStringVal(student.grade).toUpperCase();
+      
+      if (cls && normNo) {
+        return `STU_CLASS_${cls}_NO_${normNo}`;
+      }
+      if (cls && name) {
+        return `STU_CLASS_${cls}_NAME_${name}`;
+      }
+      if (grade && normNo && name) {
+        return `STU_G_${grade}_NO_${normNo}_NAME_${name}`;
+      }
+      if (normNo && name) {
+        return `STU_NO_${normNo}_NAME_${name}`;
+      }
+      return `STU_NAME_${name}_CLS_${cls}_RAW_${rawNo}`;
+    }
+
+    function rebuildExclusionSet() {
+      excludedSet.clear();
+      excludedList.forEach(item => {
+        const primaryKey = generateStudentUniqueKey(item);
+        excludedSet.add(primaryKey);
+
+        const cls = cleanStringVal(item.classNum).toUpperCase();
+        const rawNo = cleanStringVal(item.studentNo || item.id).toUpperCase();
+        const normNo = normalizeStudentNo(rawNo);
+        const name = cleanStringVal(item.name).replace(/\s+/g, '').toUpperCase();
+        const grade = cleanStringVal(item.grade).toUpperCase();
+
+        if (cls && rawNo) excludedSet.add(`CLASS_RAWNO_${cls}_${rawNo}`);
+        if (cls && normNo) excludedSet.add(`CLASS_NORMNO_${cls}_${normNo}`);
+        if (cls && name) excludedSet.add(`CLASS_NAME_${cls}_${name}`);
+        if (name && rawNo) excludedSet.add(`NAME_NO_${name}_${rawNo}`);
+        if (name && normNo) excludedSet.add(`NAME_NORMNO_${name}_${normNo}`);
+        if (name && grade) excludedSet.add(`NAME_GRADE_${name}_${grade}`);
+        if (name) excludedSet.add(`JUST_NAME_${name}`);
+      });
+    }
+
+    function isStudentExcluded(student) {
+      const primaryKey = generateStudentUniqueKey(student);
+      if (excludedSet.has(primaryKey)) return true;
+
+      const cls = cleanStringVal(student.classNum).toUpperCase();
+      const rawNo = cleanStringVal(student.studentNo || student.id).toUpperCase();
+      const normNo = normalizeStudentNo(rawNo);
+      const name = cleanStringVal(student.name).replace(/\s+/g, '').toUpperCase();
+      const grade = cleanStringVal(student.grade).toUpperCase();
+
+      if (cls && rawNo && excludedSet.has(`CLASS_RAWNO_${cls}_${rawNo}`)) return true;
+      if (cls && normNo && excludedSet.has(`CLASS_NORMNO_${cls}_${normNo}`)) return true;
+      if (cls && name && excludedSet.has(`CLASS_NAME_${cls}_${name}`)) return true;
+      if (name && rawNo && excludedSet.has(`NAME_NO_${name}_${rawNo}`)) return true;
+      if (name && normNo && excludedSet.has(`NAME_NORMNO_${name}_${normNo}`)) return true;
+      if (name && grade && excludedSet.has(`NAME_GRADE_${name}_${grade}`)) return true;
+      if (name && excludedSet.has(`JUST_NAME_${name}`)) return true;
+
+      return false;
+    }
+
+    function addStudentToExclusion(student, persistToCloud = true) {
+      const primaryKey = generateStudentUniqueKey(student);
+      
+      const studentRecord = {
+        id: student.id || student.studentNo || '',
+        name: cleanStringVal(student.name),
+        gender: normalizeGender(student.gender),
+        grade: cleanStringVal(student.grade),
+        classNum: cleanStringVal(student.classNum),
+        studentNo: cleanStringVal(student.studentNo || student.id),
+        uniqueKey: primaryKey,
+        docId: `${student.classNum || 'CLASS'}_${student.studentNo || student.id || 'NO'}_${student.name || 'NAME'}_${student.gender || 'G'}_${student.grade || 'G'}`.replace(/[\/\s#$[\]]/g, '_')
+      };
+
+      const exists = excludedList.some(item => generateStudentUniqueKey(item) === primaryKey);
+
+      if (!exists) {
+        excludedList.push(studentRecord);
+        rebuildExclusionSet();
+      }
+
+      if (persistToCloud && typeof window.cloudSaveExclusion === 'function') {
+        window.cloudSaveExclusion(studentRecord);
+      }
+    }
+
+    window.syncCloudBlacklist = function(cloudList) {
+      if (!Array.isArray(cloudList)) return;
+      excludedList = cloudList.map(item => ({
+        id: item.id || '',
+        name: item.name || '',
+        gender: normalizeGender(item.gender),
+        grade: item.grade || '',
+        classNum: item.classNum || '',
+        studentNo: item.studentNo || '',
+        docId: item.docKey || item.docId || ''
+      }));
+
+      rebuildExclusionSet();
+      renderBlacklistUI();
+      if (allCandidates.length > 0) {
+        updateCandidateStatsBar();
+      }
+    };
+
+    function renderBlacklistUI() {
+      const container = document.getElementById('blacklistItemsList');
+      const counterText = document.getElementById('blacklistCounterText');
+      const headerCount = document.getElementById('headerExcludedCount');
+
+      if (counterText) counterText.textContent = `已註冊 ${excludedList.length} 位不可中籤學生 (一直保留)`;
+      if (headerCount) headerCount.textContent = `過濾資料庫：${excludedList.length}`;
+
+      if (!container) return;
+
+      if (excludedList.length === 0) {
+        container.innerHTML = `<span class="text-slate-400 italic">目前資料庫無排除名單，所有學生皆具抽籤資格。</span>`;
+        return;
+      }
+
+      container.innerHTML = '';
+      excludedList.forEach((st, idx) => {
+        const badge = document.createElement('span');
+        const isMale = st.gender === '男';
+        badge.className = `inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border ${
+          isMale ? 'bg-sky-50 text-sky-800 border-sky-200' : 'bg-rose-50 text-rose-800 border-rose-200'
+        }`;
+        
+        const genderIcon = isMale 
+          ? `<i class="ph-bold ph-gender-male text-sky-600"></i>` 
+          : `<i class="ph-bold ph-gender-female text-rose-600"></i>`;
+
+        const displayLabel = st.classNum 
+          ? `${st.classNum}班 ${st.studentNo ? `${st.studentNo}號 ` : ''}${st.name} (${st.gender})`
+          : `${st.name} (${st.gender}) ${st.grade ? `[${st.grade}年級]` : ''}`;
+        
+        badge.innerHTML = `
+          ${genderIcon}
+          <span>${displayLabel}</span>
+          <button type="button" onclick="removeExclusionItem(${idx})" class="hover:text-red-600 ml-1 cursor-pointer" title="人手刪除此學生">
+            <i class="ph-bold ph-x"></i>
+          </button>
+        `;
+        container.appendChild(badge);
+      });
+    }
+
+    async function removeExclusionItem(index) {
+      const itemToRemove = excludedList[index];
+      if (!itemToRemove) return;
+
+      if (itemToRemove.docId && typeof window.cloudDeleteExclusion === 'function') {
+        await window.cloudDeleteExclusion(itemToRemove.docId);
+      }
+
+      excludedList.splice(index, 1);
+      rebuildExclusionSet();
+      renderBlacklistUI();
+      if (allCandidates.length > 0) {
+        updateCandidateStatsBar();
+      }
+      showToast(`已手動將 ${itemToRemove.name || '該學生'} 從排除名單中移除`, 'info');
+    }
+
+    function promptClearBlacklist() {
+      if (excludedList.length === 0) {
+        showToast('排除庫目前為空，無須清空', 'info');
+        return;
+      }
+      document.getElementById('confirmClearModal').classList.remove('hidden');
+    }
+
+    function closeClearConfirmModal() {
+      document.getElementById('confirmClearModal').classList.add('hidden');
+    }
+
+    async function confirmClearBlacklist() {
+      closeClearConfirmModal();
+      if (typeof window.cloudClearAllExclusions === 'function') {
+        await window.cloudClearAllExclusions();
+      }
+      excludedList = [];
+      excludedSet.clear();
+      renderBlacklistUI();
+      if (allCandidates.length > 0) {
+        updateCandidateStatsBar();
+      }
+      showToast('已手動清空排除庫所有名單', 'success');
+    }
+
+    function openManualBlacklistModal() {
+      document.getElementById('manualName').value = '';
+      document.getElementById('manualClass').value = '';
+      document.getElementById('manualId').value = '';
+      document.getElementById('manualGender').value = '男';
+      document.getElementById('manualModal').classList.remove('hidden');
+    }
+
+    function closeManualBlacklistModal() {
+      document.getElementById('manualModal').classList.add('hidden');
+    }
+
+    function submitManualBlacklist() {
+      const name = document.getElementById('manualName').value.trim();
+      const rawClass = document.getElementById('manualClass').value.trim();
+      const id = document.getElementById('manualId').value.trim();
+      const gender = document.getElementById('manualGender').value;
+      const grade = extractGradeFromClassOrGrade(rawClass, '');
+
+      if (!name && !id) {
+        showToast('請至少輸入學生姓名或學號！', 'error');
+        return;
+      }
+
+      addStudentToExclusion({ 
+        id, 
+        name, 
+        gender,
+        grade: grade === '未分級' ? '' : grade, 
+        classNum: rawClass, 
+        studentNo: id 
+      }, true);
+
+      renderBlacklistUI();
+      closeManualBlacklistModal();
+      showToast(`已將 ${name || id} (${gender}) 加入排除資料庫`, 'success');
+    }
+
+    function loadSampleBlacklist() {
+      const samples = [
+        { id: '12', studentNo: '12', classNum: '6A', name: '陳小明', gender: '男', grade: '6' },
+        { id: '08', studentNo: '08', classNum: '5B', name: '張曉彤', gender: '女', grade: '5' },
+        { id: '15', studentNo: '15', classNum: '4A', name: '李家俊', gender: '男', grade: '4' }
+      ];
+      samples.forEach(s => addStudentToExclusion(s, false));
+      renderBlacklistUI();
+      showToast('已載入 3 條示範排除學生數據（含性別）');
+    }
+
+    function renderQuotaInputs() {
+      const container = document.getElementById('quotaRowsContainer');
+      if (!container) return;
+      container.innerHTML = '';
+
+      let totalMale = 0;
+      let totalFemale = 0;
+
+      gradeQuotas.forEach((item, index) => {
+        const m = Number(item.maleQuota) || 0;
+        const f = Number(item.femaleQuota) || 0;
+        totalMale += m;
+        totalFemale += f;
+
+        const col = document.createElement('div');
+        col.className = 'p-3.5 bg-slate-50 border border-slate-200 rounded-2xl relative shadow-xs';
+        col.innerHTML = `
+          <div class="flex items-center justify-between mb-2.5 pb-2 border-b border-slate-200">
+            <span class="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+              <span class="w-2.5 h-2.5 rounded-full bg-indigo-600"></span>
+              【${item.grade} 年級】
+            </span>
+            <div class="flex items-center gap-2">
+              <span class="text-[11px] font-semibold text-slate-500">本級共 ${m + f} 人</span>
+              <button type="button" onclick="removeGradeQuotaRow(${index})" class="text-slate-400 hover:text-rose-500 text-xs transition" title="刪除此年級配額">
+                <i class="ph-bold ph-trash"></i>
+              </button>
+            </div>
+          </div>
+          <div class="space-y-2">
+            <div>
+              <label class="block text-[11px] font-medium text-slate-500 mb-0.5">年級代號 (如 6, 5, 4)</label>
+              <input type="text" value="${item.grade}" onchange="updateQuotaGrade(${index}, this.value)" class="w-full text-xs font-semibold px-2.5 py-1.5 border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400">
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div class="bg-sky-50/60 p-2 rounded-xl border border-sky-100">
+                <label class="block text-[11px] font-bold text-sky-800 mb-0.5 flex items-center gap-1">
+                  <i class="ph-bold ph-gender-male text-sky-600"></i> 男生名額
+                </label>
+                <input type="number" min="0" value="${item.maleQuota}" onchange="updateQuotaMaleValue(${index}, this.value)" class="w-full text-xs font-bold px-2 py-1.5 border border-sky-200 rounded-lg bg-white text-sky-900 focus:outline-none focus:ring-2 focus:ring-sky-400">
+              </div>
+              <div class="bg-rose-50/60 p-2 rounded-xl border border-rose-100">
+                <label class="block text-[11px] font-bold text-rose-800 mb-0.5 flex items-center gap-1">
+                  <i class="ph-bold ph-gender-female text-rose-600"></i> 女生名額
+                </label>
+                <input type="number" min="0" value="${item.femaleQuota}" onchange="updateQuotaFemaleValue(${index}, this.value)" class="w-full text-xs font-bold px-2 py-1.5 border border-rose-200 rounded-lg bg-white text-rose-900 focus:outline-none focus:ring-2 focus:ring-rose-400">
+              </div>
+            </div>
+          </div>
+        `;
+        container.appendChild(col);
+      });
+
+      document.getElementById('totalMaleQuotaDisplay').textContent = totalMale;
+      document.getElementById('totalFemaleQuotaDisplay').textContent = totalFemale;
+      document.getElementById('totalQuotaDisplay').textContent = totalMale + totalFemale;
+    }
+
+    function addGradeQuotaRow() {
+      gradeQuotas.push({ grade: String(gradeQuotas.length + 1), maleQuota: 10, femaleQuota: 10 });
+      renderQuotaInputs();
+    }
+
+    function removeGradeQuotaRow(index) {
+      if (gradeQuotas.length <= 1) {
+        showToast('至少需保留一個年級配額！', 'error');
+        return;
+      }
+      gradeQuotas.splice(index, 1);
+      renderQuotaInputs();
+    }
+
+    function updateQuotaGrade(index, val) {
+      gradeQuotas[index].grade = val.trim();
+      renderQuotaInputs();
+    }
+
+    function updateQuotaMaleValue(index, val) {
+      const parsed = parseInt(val, 10);
+      gradeQuotas[index].maleQuota = isNaN(parsed) || parsed < 0 ? 0 : parsed;
+      renderQuotaInputs();
+    }
+
+    function updateQuotaFemaleValue(index, val) {
+      const parsed = parseInt(val, 10);
+      gradeQuotas[index].femaleQuota = isNaN(parsed) || parsed < 0 ? 0 : parsed;
+      renderQuotaInputs();
+    }
+
+    function resolveRowFields(row, index) {
+      const keys = Object.keys(row || {});
+      const cleanKeys = keys.map(k => String(k).trim().toLowerCase());
+
+      const findVal = (regex) => {
+        const foundIdx = cleanKeys.findIndex(k => regex.test(k));
+        return foundIdx !== -1 ? String(row[keys[foundIdx]] || '').trim() : '';
+      };
+
+      let classVal = findVal(/(班別|班級|班號|班|class|classroom|grade_class)/i);
+      let studentNoVal = findVal(/(學號|座號|學生編號|編號|no|no\.|id|student_?no|student_?id|num)/i);
+      let nameVal = findVal(/(姓名|中文姓名|學生姓名|學生|全名|name|student_?name)/i);
+      let genderVal = findVal(/(性別|gender|sex)/i);
+      let gradeVal = findVal(/(年級|級別|grade|lvl|level)/i);
+
+      // Fallback inspection if headers are generic or missing
+      if (!nameVal && keys.length >= 3) {
+        const col0 = String(row[keys[0]] || '').trim();
+        const col1 = String(row[keys[1]] || '').trim();
+        const col2 = String(row[keys[2]] || '').trim();
+        const col3 = String(row[keys[3]] || '').trim();
+
+        if (!classVal && /^[1-6][A-Za-z]$/i.test(col0)) {
+          classVal = col0;
+          if (!studentNoVal && /^\d+$/.test(col1)) studentNoVal = col1;
+          if (!nameVal && col2) nameVal = col2;
+          if (!genderVal && (col3 === '男' || col3 === '女' || /^[MF]$/i.test(col3))) {
+            genderVal = col3;
+          }
+        }
+      }
+
+      const extractedGrade = extractGradeFromClassOrGrade(classVal, gradeVal);
+      const normalizedGender = normalizeGender(genderVal);
+
+      return {
+        classVal,
+        studentNoVal,
+        nameVal,
+        genderVal: normalizedGender,
+        extractedGrade: extractedGrade === '未分級' ? '' : extractedGrade
+      };
+    }
+
+    function triggerCandidateFileInput() {
+      const input = document.getElementById('candidateFileInput');
+      if (input) {
+        input.value = '';
+        input.click();
+      }
+    }
+
+    function triggerBlacklistFileInput() {
+      const input = document.getElementById('blacklistFileInput');
+      if (input) {
+        input.value = '';
+        input.click();
+      }
+    }
+
+    function setupFileInputs() {
+      const candInput = document.getElementById('candidateFileInput');
+      const dropZone = document.getElementById('candidateDropZone');
+
+      if (dropZone && candInput) {
+        dropZone.addEventListener('click', (e) => {
+          if (e.target !== candInput) {
+            triggerCandidateFileInput();
+          }
+        });
+
+        candInput.addEventListener('change', (e) => {
+          if (e.target.files && e.target.files.length > 0) {
+            handleCandidateFile(e.target.files[0]);
+          }
+        });
+
+        ['dragenter', 'dragover'].forEach(name => {
+          dropZone.addEventListener(name, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropZone.classList.add('border-indigo-600', 'bg-indigo-50/40');
+          });
+        });
+
+        ['dragleave', 'drop'].forEach(name => {
+          dropZone.addEventListener(name, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropZone.classList.remove('border-indigo-600', 'bg-indigo-50/40');
+          });
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+          if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            handleCandidateFile(e.dataTransfer.files[0]);
+          }
+        });
+      }
+
+      const blInput = document.getElementById('blacklistFileInput');
+      if (blInput) {
+        blInput.addEventListener('change', (e) => {
+          if (e.target.files && e.target.files.length > 0) {
+            handleBlacklistFile(e.target.files[0]);
+          }
+        });
+      }
+    }
+
+    function handleCandidateFile(file) {
+      if (!file) return;
+      document.getElementById('candidateFileStatus').textContent = `載入中：${file.name}...`;
+      const reader = new FileReader();
+
+      reader.onload = function(e) {
+        try {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+          let rows = XLSX.utils.sheet_to_json(firstSheet, { defval: '', raw: false });
+
+          if (!rows || rows.length === 0) {
+            const rawMatrix = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
+            if (rawMatrix && rawMatrix.length > 1) {
+              const headerRow = rawMatrix[0];
+              rows = rawMatrix.slice(1).map(rowArr => {
+                const obj = {};
+                headerRow.forEach((h, i) => {
+                  obj[h || `COL_${i}`] = rowArr[i] || '';
+                });
+                return obj;
+              });
+            }
+          }
+
+          if (!rows || rows.length === 0) {
+            showToast('檔案中未發現有效資料！', 'error');
+            document.getElementById('candidateFileStatus').textContent = '檔案為空或無法讀取';
+            return;
+          }
+
+          processCandidateRows(rows, file.name);
+        } catch (err) {
+          console.error('Candidate file parse error:', err);
+          showToast('無法讀取檔案，請確認是否為有效 Excel / CSV 格式！', 'error');
+          document.getElementById('candidateFileStatus').textContent = '讀取失敗';
+        }
+      };
+
+      reader.onerror = function() {
+        showToast('讀取檔案失敗！', 'error');
+        document.getElementById('candidateFileStatus').textContent = '讀取失敗';
+      };
+
+      reader.readAsArrayBuffer(file);
+    }
+
+    function processCandidateRows(rows, fileName) {
+      const candidates = [];
+      
+      rows.forEach((row, index) => {
+        const { classVal, studentNoVal, nameVal, genderVal, extractedGrade } = resolveRowFields(row, index);
+
+        if (nameVal) {
+          candidates.push({
+            id: studentNoVal || (classVal ? `${classVal}-${index + 1}` : `GEN-${index + 1}`),
+            name: nameVal,
+            gender: genderVal,
+            grade: extractedGrade || '未分級',
+            rawGrade: '',
+            classNum: classVal,
+            studentNo: studentNoVal
+          });
+        }
+      });
+
+      if (candidates.length === 0) {
+        showToast('未能識別任何有效學生姓名！請確保包含「班別」、「學號」、「姓名」、「性別」欄位。', 'error');
+        return;
+      }
+
+      allCandidates = candidates;
+      document.getElementById('candidateFileStatus').textContent = `已成功載入：${fileName} (${candidates.length} 位學生)`;
+      document.getElementById('headerCandidateCount').textContent = `已載入學生：${candidates.length}`;
+      showToast(`成功讀取 ${candidates.length} 位學生名單 (含性別)`, 'success');
+
+      updateCandidateStatsBar();
+    }
+
+    function handleBlacklistFile(file) {
+      if (!file) return;
+      const reader = new FileReader();
+
+      reader.onload = function(e) {
+        try {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const firstSheetName = workbook.SheetNames[0];
+          const firstSheet = workbook.Sheets[firstSheetName];
+          
+          let rows = XLSX.utils.sheet_to_json(firstSheet, { defval: '', raw: false });
+
+          if (!rows || rows.length === 0) {
+            const rawMatrix = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
+            if (rawMatrix && rawMatrix.length > 1) {
+              const headerRow = rawMatrix[0];
+              rows = rawMatrix.slice(1).map(rowArr => {
+                const obj = {};
+                headerRow.forEach((h, i) => {
+                  obj[h || `COL_${i}`] = rowArr[i] || '';
+                });
+                return obj;
+              });
+            }
+          }
+
+          if (!rows || rows.length === 0) {
+            showToast('禁抽名單檔案中未發現有效資料！請確認工作表非空白。', 'error');
+            return;
+          }
+
+          let added = 0;
+          let skipped = 0;
+          const newlyAddedStudents = [];
+
+          rows.forEach((row, index) => {
+            const { classVal, studentNoVal, nameVal, genderVal, extractedGrade } = resolveRowFields(row, index);
+
+            if (nameVal || studentNoVal) {
+              const studentRecord = {
+                id: studentNoVal || (classVal ? `${classVal}-${index + 1}` : `EXCL-${index + 1}`),
+                name: nameVal || (studentNoVal ? `學生(${classVal || ''}#${studentNoVal})` : `學生${index + 1}`),
+                gender: genderVal,
+                grade: extractedGrade,
+                classNum: classVal,
+                studentNo: studentNoVal
+              };
+
+              const key = generateStudentUniqueKey(studentRecord);
+              const alreadyInList = excludedList.some(item => generateStudentUniqueKey(item) === key);
+
+              if (!alreadyInList) {
+                studentRecord.uniqueKey = key;
+                studentRecord.docId = `${studentRecord.classNum || 'CLASS'}_${studentRecord.studentNo || 'NO'}_${studentRecord.name || 'NAME'}_${studentRecord.gender || 'G'}_${studentRecord.grade || 'G'}`.replace(/[\/\s#$[\]]/g, '_');
+                
+                excludedList.push(studentRecord);
+                newlyAddedStudents.push(studentRecord);
+                added++;
+              } else {
+                skipped++;
+              }
+            }
+          });
+
+          if (added === 0 && skipped === 0) {
+            showToast('未能辨識出學生資料！請確保 Excel 包含「班別、學號、姓名、性別」欄位。', 'error');
+            return;
+          }
+
+          rebuildExclusionSet();
+          renderBlacklistUI();
+          if (allCandidates.length > 0) {
+            updateCandidateStatsBar();
+          }
+
+          if (newlyAddedStudents.length > 0 && typeof window.cloudBatchSaveExclusions === 'function') {
+            window.cloudBatchSaveExclusions(newlyAddedStudents).catch(err => {
+              console.error("Cloud batch save error for blacklist file:", err);
+            });
+          }
+
+          if (added > 0) {
+            showToast(`已成功辨認並匯入 ${added} 位禁抽學生！${skipped > 0 ? `（${skipped} 位重複）` : ''}`, 'success');
+          } else {
+            showToast(`匯入之全部學生已存在於排除資料庫中。`, 'info');
+          }
+        } catch (err) {
+          console.error('Blacklist Excel parse error:', err);
+          showToast('無法讀取禁抽名單檔案，請確認是否為有效 Excel / CSV 格式！', 'error');
+        }
+      };
+
+      reader.onerror = function() {
+        showToast('讀取禁抽名單檔案失敗！', 'error');
+      };
+
+      reader.readAsArrayBuffer(file);
+    }
+
+    function updateCandidateStatsBar() {
+      const statsBar = document.getElementById('candidateStatsBar');
+      if (!statsBar) return;
+
+      const stats = {};
+
+      allCandidates.forEach(c => {
+        if (!stats[c.grade]) {
+          stats[c.grade] = {
+            totalM: 0, totalF: 0,
+            eligibleM: 0, eligibleF: 0,
+            exclM: 0, exclF: 0
+          };
+        }
+        const isExcl = isStudentExcluded(c);
+        if (c.gender === '男') {
+          stats[c.grade].totalM++;
+          if (isExcl) stats[c.grade].exclM++;
+          else stats[c.grade].eligibleM++;
+        } else {
+          stats[c.grade].totalF++;
+          if (isExcl) stats[c.grade].exclF++;
+          else stats[c.grade].eligibleF++;
+        }
+      });
+
+      let html = '<span class="text-xs font-semibold text-slate-500 mr-1">各級合資格人數 (男/女)：</span>';
+      Object.keys(stats).sort().forEach(g => {
+        const item = stats[g];
+        html += `<span class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-xl bg-indigo-50 text-indigo-800 border border-indigo-200">
+          <strong>${g}年級:</strong> 
+          <span class="text-sky-700 font-bold"><i class="ph-bold ph-gender-male"></i>${item.eligibleM}男</span>
+          <span class="text-rose-700 font-bold"><i class="ph-bold ph-gender-female"></i>${item.eligibleF}女</span>
+          <span class="text-slate-400 text-[10px]">(已排: ${item.exclM}男/${item.exclF}女)</span>
+        </span>`;
+      });
+      statsBar.innerHTML = html;
+    }
+
+    function downloadSampleBlacklistFile() {
+      const sampleBlacklist = [
+        { '班別': '6A', '學號': '12', '姓名': '陳小明', '性別': '男' },
+        { '班別': '5B', '學號': '08', '姓名': '張曉彤', '性別': '女' },
+        { '班別': '4A', '學號': '15', '姓名': '李家俊', '性別': '男' }
+      ];
+
+      const ws = XLSX.utils.json_to_sheet(sampleBlacklist);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "禁抽名單");
+      XLSX.writeFile(wb, "禁抽名單_班別_學號_姓名_性別範本.xlsx");
+    }
+
+    function downloadSampleCandidateFile() {
+      const sampleData = [
+        { '班別': '6A', '學號': '01', '姓名': '陳小明', '性別': '男' },
+        { '班別': '6A', '學號': '02', '姓名': '林美琪', '性別': '女' },
+        { '班別': '6B', '學號': '03', '姓名': '黃浩然', '性別': '男' },
+        { '班別': '6B', '學號': '04', '姓名': '周佩詩', '性別': '女' },
+        { '班別': '5A', '學號': '01', '姓名': '張曉彤', '性別': '女' },
+        { '班別': '5A', '學號': '02', '姓名': '何偉豪', '性別': '男' },
+        { '班別': '4A', '學號': '01', '姓名': '李家俊', '性別': '男' },
+        { '班別': '4B', '學號': '02', '姓名': '梁麗雯', '性別': '女' }
+      ];
+
+      const classes = ['6A', '6B', '5A', '5B', '4A', '4B'];
+      classes.forEach(cls => {
+        for (let i = 5; i <= 28; i++) {
+          const numStr = i < 10 ? '0' + i : String(i);
+          const isBoy = i % 2 !== 0;
+          sampleData.push({
+            '班別': cls,
+            '學號': numStr,
+            '姓名': `學生_${cls}_${numStr}號`,
+            '性別': isBoy ? '男' : '女'
+          });
+        }
+      });
+
+      const ws = XLSX.utils.json_to_sheet(sampleData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "學生名單");
+      XLSX.writeFile(wb, "學生活動抽籤名單_班別_學號_姓名_性別範本.xlsx");
+    }
+
+    function cryptoRandomShuffle(array) {
+      const arr = [...array];
+      for (let i = arr.length - 1; i > 0; i--) {
+        const randomBuffer = new Uint32Array(1);
+        window.crypto.getRandomValues(randomBuffer);
+        const j = Math.floor((randomBuffer[0] / (0xFFFFFFFF + 1)) * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    }
+
+    async function executeDraw() {
+      if (allCandidates.length === 0) {
+        showToast('請先上載學生名單 Excel 檔案！', 'error');
+        return;
+      }
+
+      const validQuotas = gradeQuotas.filter(q => (q.maleQuota > 0 || q.femaleQuota > 0) && q.grade);
+      if (validQuotas.length === 0) {
+        showToast('請至少指定一個年級的有效配額（男生或女生人數大於 0）！', 'error');
+        return;
+      }
+
+      // Filter eligible candidates
+      const eligibleCandidates = allCandidates.filter(c => !isStudentExcluded(c));
+      const excludedCount = allCandidates.length - eligibleCandidates.length;
+
+      // Group eligible students by Grade AND Gender
+      const pool = {};
+      eligibleCandidates.forEach(cand => {
+        const key = `${cand.grade}_${cand.gender}`;
+        if (!pool[key]) pool[key] = [];
+        pool[key].push(cand);
+      });
+
+      let warnings = [];
+      validQuotas.forEach(item => {
+        const mKey = `${item.grade}_男`;
+        const fKey = `${item.grade}_女`;
+        const availM = pool[mKey] ? pool[mKey].length : 0;
+        const availF = pool[fKey] ? pool[fKey].length : 0;
+
+        if (availM < item.maleQuota) {
+          warnings.push(`${item.grade}年級男生 (配額 ${item.maleQuota}人，合資格僅 ${availM}人)`);
+        }
+        if (availF < item.femaleQuota) {
+          warnings.push(`${item.grade}年級女生 (配額 ${item.femaleQuota}人，合資格僅 ${availF}人)`);
+        }
+      });
+
+      if (warnings.length > 0) {
+        showToast(`注意：${warnings.join('; ')}，不足部分將抽盡現有合資格名額。`, 'info');
+      }
+
+      const animCard = document.getElementById('lotteryAnimationCard');
+      const rollingText = document.getElementById('rollingNamesText');
+      const gradeLabel = document.getElementById('drawingGradeLabel');
+      const startBtn = document.getElementById('startDrawBtn');
+
+      animCard.classList.remove('hidden');
+      startBtn.disabled = true;
+      startBtn.classList.add('opacity-50', 'cursor-not-allowed');
+
+      winnersList = [];
+      const drawTimestamp = new Date().toLocaleTimeString('zh-HK', { hour12: false });
+
+      for (const quotaItem of validQuotas) {
+        // Draw Males for this grade
+        if (quotaItem.maleQuota > 0) {
+          gradeLabel.textContent = `正抽取【${quotaItem.grade}年級 男生】名額（配額：${quotaItem.maleQuota} 名）...`;
+          const mPool = pool[`${quotaItem.grade}_男`] || [];
+          const mShuffled = cryptoRandomShuffle(mPool);
+          const mTake = Math.min(quotaItem.maleQuota, mShuffled.length);
+
+          const animNames = mPool.length > 0 ? mPool.map(c => c.name) : ['無合資格男生'];
+          for (let t = 0; t < 8; t++) {
+            const randName = animNames[Math.floor(Math.random() * animNames.length)];
+            rollingText.textContent = `👦 ${randName} (${quotaItem.grade}年級男生) · · ·`;
+            await new Promise(r => setTimeout(r, 40));
+          }
+
+          for (let i = 0; i < mTake; i++) {
+            winnersList.push({
+              ...mShuffled[i],
+              drawnGrade: quotaItem.grade,
+              drawTime: drawTimestamp
+            });
+          }
+        }
+
+        // Draw Females for this grade
+        if (quotaItem.femaleQuota > 0) {
+          gradeLabel.textContent = `正抽取【${quotaItem.grade}年級 女生】名額（配額：${quotaItem.femaleQuota} 名）...`;
+          const fPool = pool[`${quotaItem.grade}_女`] || [];
+          const fShuffled = cryptoRandomShuffle(fPool);
+          const fTake = Math.min(quotaItem.femaleQuota, fShuffled.length);
+
+          const animNames = fPool.length > 0 ? fPool.map(c => c.name) : ['無合資格女生'];
+          for (let t = 0; t < 8; t++) {
+            const randName = animNames[Math.floor(Math.random() * animNames.length)];
+            rollingText.textContent = `👧 ${randName} (${quotaItem.grade}年級女生) · · ·`;
+            await new Promise(r => setTimeout(r, 40));
+          }
+
+          for (let i = 0; i < fTake; i++) {
+            winnersList.push({
+              ...fShuffled[i],
+              drawnGrade: quotaItem.grade,
+              drawTime: drawTimestamp
+            });
+          }
+        }
+      }
+
+      const totalMalesWon = winnersList.filter(w => w.gender === '男').length;
+      const totalFemalesWon = winnersList.filter(w => w.gender === '女').length;
+
+      rollingText.textContent = `🎉 抽籤圓滿完成！共抽出 ${winnersList.length} 人 (${totalMalesWon}男 / ${totalFemalesWon}女)`;
+      gradeLabel.textContent = `抽籤結束 · 已嚴格按照男女配額獨立抽出`;
+      
+      try {
+        confetti({
+          particleCount: 130,
+          spread: 85,
+          origin: { y: 0.6 }
+        });
+      } catch (e){}
+
+      startBtn.disabled = false;
+      startBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+
+      showToast(`抽籤完成！共產生 ${winnersList.length} 名中籤者（已過濾 ${excludedCount} 名不可中籤學生）`, 'success');
+
+      currentFilterGrade = 'ALL';
+      currentFilterGender = 'ALL';
+      renderResults();
+    }
+
+    function renderResults() {
+      const resultsSection = document.getElementById('resultsSection');
+      if (!resultsSection) return;
+
+      resultsSection.classList.remove('hidden');
+      
+      const badge = document.getElementById('resultsCountBadge');
+      if (badge) badge.textContent = winnersList.length;
+
+      const headerWinners = document.getElementById('headerWinnersCount');
+      if (headerWinners) headerWinners.textContent = `中籤名單：${winnersList.length}`;
+
+      renderGradeFilterTabs();
+      filterResults();
+
+      resultsSection.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function renderGradeFilterTabs() {
+      const tabsContainer = document.getElementById('resultsGradeTabs');
+      if (!tabsContainer) return;
+
+      const uniqueGrades = Array.from(new Set(winnersList.map(w => w.grade))).sort();
+
+      let tabsHtml = `
+        <button type="button" onclick="filterResultsByGrade('ALL')" class="px-3 py-1.5 text-xs font-bold rounded-xl transition ${currentFilterGrade === 'ALL' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
+          全部年級 (${winnersList.length})
+        </button>
+      `;
+
+      uniqueGrades.forEach(g => {
+        const count = winnersList.filter(w => w.grade === g).length;
+        const isActive = currentFilterGrade === g;
+        tabsHtml += `
+          <button type="button" onclick="filterResultsByGrade('${g}')" class="px-3 py-1.5 text-xs font-bold rounded-xl transition ${isActive ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
+            ${g}年級 (${count})
+          </button>
+        `;
+      });
+
+      tabsContainer.innerHTML = tabsHtml;
+    }
+
+    function filterResultsByGrade(grade) {
+      currentFilterGrade = grade;
+      renderGradeFilterTabs();
+      filterResults();
+    }
+
+    function filterResultsByGender(gender) {
+      currentFilterGender = gender;
+      
+      const allBtn = document.getElementById('filterGenderAllBtn');
+      const maleBtn = document.getElementById('filterGenderMaleBtn');
+      const femaleBtn = document.getElementById('filterGenderFemaleBtn');
+
+      [allBtn, maleBtn, femaleBtn].forEach(b => {
+        b.className = 'px-2.5 py-1 text-xs font-bold rounded-lg text-slate-600';
+      });
+
+      if (gender === 'ALL') {
+        allBtn.className = 'px-2.5 py-1 text-xs font-bold rounded-lg bg-white shadow-xs text-slate-900';
+      } else if (gender === '男') {
+        maleBtn.className = 'px-2.5 py-1 text-xs font-bold rounded-lg bg-sky-600 shadow-xs text-white';
+      } else {
+        femaleBtn.className = 'px-2.5 py-1 text-xs font-bold rounded-lg bg-rose-600 shadow-xs text-white';
+      }
+
+      filterResults();
+    }
+
+    function filterResults() {
+      const tbody = document.getElementById('winnersTableBody');
+      if (!tbody) return;
+
+      let filtered = [...winnersList];
+      if (currentFilterGrade !== 'ALL') {
+        filtered = filtered.filter(w => w.grade === currentFilterGrade);
+      }
+      if (currentFilterGender !== 'ALL') {
+        filtered = filtered.filter(w => w.gender === currentFilterGender);
+      }
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="text-center py-8 text-slate-400">目前沒有符合篩選條件的中籤學生資料</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = '';
+      filtered.forEach((st, idx) => {
+        const isBoy = st.gender === '男';
+        const tr = document.createElement('tr');
+        tr.className = 'hover:bg-slate-50/80 transition-colors';
+        tr.innerHTML = `
+          <td class="py-3 px-4 font-mono text-slate-400">${idx + 1}</td>
+          <td class="py-3 px-4">
+            <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+              ${st.grade} 年級
+            </span>
+          </td>
+          <td class="py-3 px-4 font-bold text-slate-800">${st.classNum || '-'}</td>
+          <td class="py-3 px-4 text-slate-600 font-mono">${st.studentNo || st.id || '-'}</td>
+          <td class="py-3 px-4 font-bold text-slate-900">${st.name}</td>
+          <td class="py-3 px-4">
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${
+              isBoy ? 'bg-sky-50 text-sky-700 border border-sky-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
+            }">
+              <i class="ph-bold ${isBoy ? 'ph-gender-male text-sky-500' : 'ph-gender-female text-rose-500'}"></i>
+              ${st.gender}
+            </span>
+          </td>
+          <td class="py-3 px-4 text-slate-400 text-xs">${st.drawTime}</td>
+          <td class="py-3 px-4 text-right">
+            <span class="inline-flex items-center gap-1 text-emerald-600 font-semibold text-xs">
+              <i class="ph-bold ph-check"></i> 中籤
+            </span>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function resetDrawResults() {
+      winnersList = [];
+      document.getElementById('resultsSection').classList.add('hidden');
+      document.getElementById('lotteryAnimationCard').classList.add('hidden');
+      const headerWinners = document.getElementById('headerWinnersCount');
+      if (headerWinners) headerWinners.textContent = `中籤名單：0`;
+      showToast('已重設本次抽籤結果');
+    }
+
+    function exportWinnersToExcel() {
+      if (winnersList.length === 0) {
+        showToast('目前尚無中籤名單可導出！', 'error');
+        return;
+      }
+
+      const exportRows = winnersList.map((st, index) => ({
+        '中籤序號': index + 1,
+        '年級': `${st.grade}年級`,
+        '班別': st.classNum || '',
+        '學號': st.studentNo || st.id || '',
+        '學生姓名': st.name,
+        '性別': st.gender,
+        '抽籤時間': st.drawTime,
+        '抽籤狀態': '正取中籤'
+      }));
+
+      const ws = XLSX.utils.json_to_sheet(exportRows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "中籤名單");
+      
+      const fileName = `學生活動中籤名單(男女配額)_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      XLSX.writeFile(wb, fileName);
+      showToast(`已成功下載：${fileName}`, 'success');
+    }
+
+    async function commitWinnersToBlacklist() {
+      if (!winnersList || winnersList.length === 0) {
+        showToast('目前尚無中籤學生可加入排除資料庫！', 'error');
+        return;
+      }
+
+      let addedCount = 0;
+      let alreadyExistsCount = 0;
+      const newlyAddedStudents = [];
+
+      winnersList.forEach(w => {
+        const candidateRecord = {
+          id: w.studentNo || w.id || '',
+          name: w.name || '',
+          gender: w.gender || '男',
+          grade: w.grade || w.drawnGrade || '',
+          classNum: w.classNum || '',
+          studentNo: w.studentNo || w.id || ''
+        };
+
+        const key = generateStudentUniqueKey(candidateRecord);
+        const alreadyInList = excludedList.some(item => generateStudentUniqueKey(item) === key);
+
+        if (!alreadyInList) {
+          candidateRecord.uniqueKey = key;
+          candidateRecord.docId = `${candidateRecord.classNum || 'CLASS'}_${candidateRecord.studentNo || 'NO'}_${candidateRecord.name || 'NAME'}_${candidateRecord.gender || 'G'}_${candidateRecord.grade || 'G'}`.replace(/[\/\s#$[\]]/g, '_');
+          
+          excludedList.push(candidateRecord);
+          newlyAddedStudents.push(candidateRecord);
+          addedCount++;
+        } else {
+          alreadyExistsCount++;
+        }
+      });
+
+      rebuildExclusionSet();
+      renderBlacklistUI();
+      updateCandidateStatsBar();
+      renderResults();
+
+      if (newlyAddedStudents.length > 0 && typeof window.cloudBatchSaveExclusions === 'function') {
+        window.cloudBatchSaveExclusions(newlyAddedStudents).catch(err => {
+          console.error("Cloud batch save error:", err);
+        });
+      }
+
+      if (addedCount > 0) {
+        showToast(`已成功將本次中籤之全部 ${addedCount} 位學生完整加入排除庫！${alreadyExistsCount > 0 ? `（其餘 ${alreadyExistsCount} 位先前已在名單內）` : ''}`, 'success');
+      } else {
+        showToast(`全部 ${winnersList.length} 位中籤學生先前已在排除庫中，無須重複加入。`, 'info');
+      }
+    }
+
+    window.onload = function() {
+      renderQuotaInputs();
+      setupFileInputs();
+      renderBlacklistUI();
+    };
+  </script>
+</body>
+</html>
